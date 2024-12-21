@@ -1,4 +1,4 @@
-import { decompress } from "fzstd";
+import { decompress, Decompress } from "fzstd";
 import fs from "fs";
 
 function isValidZstdData(data: Uint8Array): boolean {
@@ -40,7 +40,7 @@ function isValidZstdData(data: Uint8Array): boolean {
     */
 }
 
-function decompressFile(inputPath: string, outputPath: string) {
+function decompressFileSimple(inputPath: string, outputPath: string) {
   try {
     // Read the compressed file
     const compressedData = fs.readFileSync(inputPath);
@@ -65,6 +65,41 @@ function decompressFile(inputPath: string, outputPath: string) {
   }
 }
 
+function decompressFile(inputPath: string, outputPath: string) {
+  try {
+    const compressedData = fs.readFileSync(inputPath);
+    const compressedArray = new Uint8Array(compressedData);
+
+    const isValid = isValidZstdData(compressedArray);
+    console.log("File is valid Zstd:", isValid);
+
+    let totalSize = 0;
+
+    const writeStream = fs.createWriteStream(outputPath);
+
+    const stream = new Decompress((chunk, isLast) => {
+      writeStream.write(Buffer.from(chunk));
+      totalSize += chunk.length;
+      
+      if (isLast) {
+        writeStream.end();
+        console.log("File successfully decompressed!");
+        console.log("Original size:", compressedData.length, "bytes");
+        console.log("Decompressed size:", totalSize, "bytes");
+      }
+    });
+
+    const chunkSize = 16 * 1024;
+    for (let i = 0; i < compressedArray.length; i += chunkSize) {
+      const chunk = compressedArray.slice(i, i + chunkSize);
+      const isLastChunk = (i + chunkSize) >= compressedArray.length;
+      stream.push(chunk, isLastChunk);
+    }
+
+  } catch (error) {
+    console.error("Error decompressing file:", error);
+  }
+}
 // Use the function
 decompressFile(
   "dist/dance_yorokobi_mai_woman.bmp.zst",
