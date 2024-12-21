@@ -1,5 +1,6 @@
 import { decompress, Decompress } from "fzstd";
 import fs from "fs";
+import { ZstdInit, ZstdCodec } from '@oneidentity/zstd-js';
 
 function isValidZstdData(data: Uint8Array): boolean {
   if (data.length < 4) {
@@ -100,9 +101,81 @@ function decompressFile(inputPath: string, outputPath: string) {
     console.error("Error decompressing file:", error);
   }
 }
-// Use the function
-decompressFile(
-  "dist/dance_yorokobi_mai_woman.bmp.zst",
-  "dist/dance_yorokobi_mai_woman.bmp"
-);
 
+// decompressFile(
+  // "dist/dance_yorokobi_mai_woman.bmp.zst",
+  // "dist/dance_yorokobi_mai_woman.bmp"
+// );
+
+
+async function testCompressDecompress() {
+  // Initialize zstd-js
+  const { ZstdStream } = await ZstdInit();
+  
+  // Run 100 tests
+  for (let i = 0; i < 100; i++) {
+    try {
+      // Generate data
+      const size = Math.floor(Math.random() * 1000000) + 1000; // betwen 1KB and 1MB
+      const originalData = new Uint8Array(size);
+      for (let j = 0; j < size; j++) {
+        originalData[j] = Math.floor(Math.random() * 256);
+      }
+      
+      console.log(`\nTest #${i + 1}`);
+      console.log('Original size:', originalData.length, 'bytes');
+
+      // Compress use zstd-js 
+      const compressedData = ZstdStream.compress(originalData);
+      console.log('Compressed size:', compressedData.length, 'bytes');
+      
+      // Decompress fzstd 
+      let decompressedChunks: Uint8Array[] = [];
+      let totalSize = 0;
+      
+      const decompressStream = new Decompress((chunk, isLast) => {
+        decompressedChunks.push(chunk);
+        totalSize += chunk.length;
+        
+        if (isLast) {
+          // Combine all chunks
+          const decompressedData = new Uint8Array(totalSize);
+          let offset = 0;
+          for (const chunk of decompressedChunks) {
+            decompressedData.set(chunk, offset);
+            offset += chunk.length;
+          }
+          
+          console.log('Decompressed size:', decompressedData.length, 'bytes');
+          
+          // Verify data
+          let matches = originalData.length === decompressedData.length;
+          if (matches) {
+            for (let j = 0; j < originalData.length; j++) {
+              if (originalData[j] !== decompressedData[j]) {
+                matches = false;
+                break;
+              }
+            }
+          }
+          console.log('Data matches:', matches);
+        }
+      });
+
+      // Feed compressed data to decompression stream in chunks
+      const chunkSize = 16 * 1024; // 16KB chunks
+
+      for (let j = 0; j < compressedData.length; j += chunkSize) {
+        const chunk = compressedData.slice(j, j + chunkSize);
+        const isLastChunk = (j + chunkSize) >= compressedData.length;
+
+        decompressStream.push(chunk, isLastChunk);
+      }
+
+    } catch (error) {
+      console.error(`Error in test #${i + 1}:`, error);
+    }
+  }
+}
+
+testCompressDecompress().catch(console.error);
