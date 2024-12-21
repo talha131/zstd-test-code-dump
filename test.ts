@@ -208,6 +208,7 @@ function decompressArray(compressedArray: Uint8Array, outputPath: string) {
     let decompressedChunks: Uint8Array[] = [];
     let totalSize = 0;
 
+    // fzstd
     const decompressStream = new Decompress((chunk, isLast) => {
       decompressedChunks.push(chunk);
       totalSize += chunk.length;
@@ -228,13 +229,14 @@ function decompressArray(compressedArray: Uint8Array, outputPath: string) {
       }
     });
 
+    decompressStream.push(compressedArray, true);
     // Feed compressed data to decompression stream in chunks
-    const chunkSize = 16 * 1024; // 16KB chunks
-    for (let i = 0; i < compressedArray.length; i += chunkSize) {
-      const chunk = compressedArray.slice(i, i + chunkSize);
-      const isLastChunk = i + chunkSize >= compressedArray.length;
-      decompressStream.push(chunk, isLastChunk);
-    }
+    // const chunkSize = 1 * 1024; // 16KB chunks
+    // for (let i = 0; i < compressedArray.length; i += chunkSize) {
+    //   const chunk = compressedArray.slice(i, i + chunkSize);
+    //   const isLastChunk = i + chunkSize >= compressedArray.length;
+    //   decompressStream.push(chunk, isLastChunk);
+    // }
   } catch (error) {
     console.error("Error decompressing file:", error);
   }
@@ -349,5 +351,61 @@ const hexDump2 = [
   "0x6f,0x67,0x69,0x6e,0x20,0x73,0x65,0x73,0x73,0x69,0x6f,0x6e",
 ];
 
-const compressedArray = hexStringToUint8Array(hexDump2);
-decompressArray(compressedArray, "decompressed_output0.bin");
+// const compressedArray = hexStringToUint8Array(hexDump0);
+// decompressArray(compressedArray, "decompressed_output0.bin");
+//
+async function decompressUsingZstdOne() {
+  const { ZstdSimple, ZstdStream }: ZstdCodec = await ZstdInit();
+
+  const compressedArray0 = hexStringToUint8Array(hexDump0);
+  const compressedArray1 = hexStringToUint8Array(hexDump1);
+  const compressedArray2 = hexStringToUint8Array(hexDump2);
+
+  try {
+    ZstdStream.decompress(ZstdStream.compress(compressedArray0));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray0));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray1));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray0));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray2));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray1));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray0));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray2));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray1));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray0));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray2));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray1));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray0));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray2));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray1));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray0));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray2));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray1));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray0));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray2));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray1));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray0));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray2));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray1));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray0));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray2));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray1));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray0));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray2));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray1));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray0));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray2));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray1));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray0));
+    ZstdStream.decompress(ZstdStream.compress(compressedArray2));
+    // console.log("Decompressing using ZstdSimple 0");
+    // ZstdStream.decompress(compressedArray0);
+    // console.log("Decompressing using ZstdSimple 1");
+    // ZstdStream.decompress(compressedArray1);
+    // console.log("Decompressing using ZstdSimple 2");
+    // ZstdStream.decompress(compressedArray2);
+  } catch (error) {
+    console.error("Error decompressing file:", error);
+  }
+}
+
+decompressUsingZstdOne();
