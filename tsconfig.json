@@ -7,6 +7,12 @@
     "strict": true,
     "lib": ["ES2020", "DOM"],
     "outDir": "dist",
-    "types": ["node"]
-  }
+    "types": ["node"],
+    "typeRoots": ["./node_modules/@types", "./typings"],
+    "resolveJsonModule": true,
+    "sourceMap": true
+  },
+  "type": "module",
+  "include": ["./**/*"],
+  "exclude": ["node_modules", "**/*.spec.ts"]
 }
