@@ -2,11 +2,6 @@
   "name": "test-project",
   "version": "1.0.0",
   "type": "module",
-  "dependencies": {
-    "@oneidentity/zstd-js": "^1.0.3",
-    "fzstd": "^0.1.1",
-    "zstd-codec": "^0.1.5"
-  },
   "devDependencies": {
     "@types/node": "^22.10.2"
   }
