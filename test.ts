@@ -73,15 +73,23 @@ interface ZSTDResult {
 
 class ZSTDDecompressor {
   private zstdModule: any;
-  private dctx: any;
-  private buffer: Uint8Array;
-  private bufferOffset: number;
+  private dctx: number;
+  private inBufferSize: number;
+  private outBufferSize: number;
+  private inPtr: number;
+  private outPtr: number;
 
   constructor(zstdModule: any) {
     this.zstdModule = zstdModule;
     this.dctx = this.zstdModule._ZSTD_createDStream();
-    this.buffer = new Uint8Array(0);
-    this.bufferOffset = 0;
+    
+    // Initialize with reasonable buffer sizes
+    this.inBufferSize = 32 * 1024;  // 32KB
+    this.outBufferSize = 128 * 1024; // 128KB
+    
+    // Allocate fixed buffers
+    this.inPtr = this.zstdModule._malloc(this.inBufferSize);
+    this.outPtr = this.zstdModule._malloc(this.outBufferSize);
 
     const initResult = this.zstdModule._ZSTD_initDStream(this.dctx);
     if (this.zstdModule._ZSTD_isError(initResult)) {
@@ -94,78 +102,88 @@ class ZSTDDecompressor {
   }
 
   feed(chunk: Uint8Array): ZSTDResult {
-    // Append new data to existing buffer
-    const newBuffer = new Uint8Array(
-      this.buffer.length - this.bufferOffset + chunk.length
-    );
-    newBuffer.set(this.buffer.subarray(this.bufferOffset));
-    newBuffer.set(chunk, this.buffer.length - this.bufferOffset);
-    this.buffer = newBuffer;
-    this.bufferOffset = 0;
-
-    // Allocate input/output buffers
-    const inBufSize = this.buffer.length;
-    const outBufSize = inBufSize * 4; // Conservative estimate, adjust as needed
-
-    const inPtr = this.zstdModule._malloc(inBufSize);
-    const outPtr = this.zstdModule._malloc(outBufSize);
-
-    try {
-      // Copy input data
-      this.zstdModule.HEAPU8.set(this.buffer, inPtr);
+    let pos = 0;
+    let decompressedChunks: Uint8Array[] = [];
+    
+    while (pos < chunk.length) {
+      // Copy input chunk to input buffer
+      const remainingInput = chunk.length - pos;
+      const bytesToCopy = Math.min(remainingInput, this.inBufferSize);
+      this.zstdModule.HEAPU8.set(chunk.subarray(pos, pos + bytesToCopy), this.inPtr);
 
       // Setup ZSTD_inBuffer
-      const inBuffer = {
-        src: inPtr,
-        size: inBufSize,
-        pos: 0,
-      };
+      const inBufferPtr = this.zstdModule._malloc(12); // size of ZSTD_inBuffer struct
+      this.zstdModule.HEAPU32[inBufferPtr >> 2] = this.inPtr; // src
+      this.zstdModule.HEAPU32[(inBufferPtr >> 2) + 1] = bytesToCopy; // size
+      this.zstdModule.HEAPU32[(inBufferPtr >> 2) + 2] = 0; // pos
 
       // Setup ZSTD_outBuffer
-      const outBuffer = {
-        dst: outPtr,
-        size: outBufSize,
-        pos: 0,
-      };
+      const outBufferPtr = this.zstdModule._malloc(12); // size of ZSTD_outBuffer struct
+      this.zstdModule.HEAPU32[outBufferPtr >> 2] = this.outPtr; // dst
+      this.zstdModule.HEAPU32[(outBufferPtr >> 2) + 1] = this.outBufferSize; // size
+      this.zstdModule.HEAPU32[(outBufferPtr >> 2) + 2] = 0; // pos
 
-      // Decompress
-      const result = this.zstdModule._ZSTD_decompressStream(
-        this.dctx,
-        outBuffer,
-        inBuffer
-      );
-
-      if (this.zstdModule._ZSTD_isError(result)) {
-        throw new Error(
-          `Decompression failed: ${this.zstdModule.UTF8ToString(
-            this.zstdModule._ZSTD_getErrorName(result)
-          )}`
+      try {
+        // Decompress
+        const result = this.zstdModule._ZSTD_decompressStream(
+          this.dctx,
+          outBufferPtr,
+          inBufferPtr
         );
+
+        if (this.zstdModule._ZSTD_isError(result)) {
+          throw new Error(
+            `Decompression failed: ${this.zstdModule.UTF8ToString(
+              this.zstdModule._ZSTD_getErrorName(result)
+            )}`
+          );
+        }
+
+        const bytesConsumed = this.zstdModule.HEAPU32[(inBufferPtr >> 2) + 2]; // input pos
+        const bytesProduced = this.zstdModule.HEAPU32[(outBufferPtr >> 2) + 2]; // output pos
+
+        if (bytesProduced > 0) {
+          const decompressed = new Uint8Array(bytesProduced);
+          decompressed.set(
+            this.zstdModule.HEAPU8.subarray(this.outPtr, this.outPtr + bytesProduced)
+          );
+          decompressedChunks.push(decompressed);
+        }
+
+        pos += bytesConsumed;
+      } finally {
+        this.zstdModule._free(inBufferPtr);
+        this.zstdModule._free(outBufferPtr);
       }
-
-      // Copy output
-      const decompressed = new Uint8Array(outBuffer.pos);
-      decompressed.set(
-        this.zstdModule.HEAPU8.subarray(outPtr, outPtr + outBuffer.pos)
-      );
-
-      // Update buffer offset
-      this.bufferOffset += inBuffer.pos;
-
-      return {
-        decompressedData: decompressed,
-        consumed: inBuffer.pos,
-      };
-    } finally {
-      this.zstdModule._free(inPtr);
-      this.zstdModule._free(outPtr);
     }
+
+    // Combine all decompressed chunks
+    const totalSize = decompressedChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const result = new Uint8Array(totalSize);
+    let offset = 0;
+    for (const chunk of decompressedChunks) {
+      result.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    return {
+      decompressedData: result,
+      consumed: pos
+    };
   }
 
   destroy() {
     if (this.dctx) {
       this.zstdModule._ZSTD_freeDStream(this.dctx);
-      this.dctx = null;
+      this.dctx = 0;
+    }
+    if (this.inPtr) {
+      this.zstdModule._free(this.inPtr);
+      this.inPtr = 0;
+    }
+    if (this.outPtr) {
+      this.zstdModule._free(this.outPtr);
+      this.outPtr = 0;
     }
   }
 }
@@ -173,23 +191,29 @@ class ZSTDDecompressor {
 // Usage example:
 async function decompressFrames(
   compressedArray0: Uint8Array,
-  compressedArray1: Uint8Array
+  compressedArray1: Uint8Array,
+  compressedArray2: Uint8Array
 ) {
   const zstd = await loadZstdModule(); // Your module loading function
   const decompressor = new ZSTDDecompressor(zstd);
 
   try {
     // Feed first chunk
-    const result1 = decompressor.feed(compressedArray0);
+    const result0 = decompressor.feed(compressedArray0);
     console.log("Compressed size 1:", compressedArray0.length);
-    console.log("Decompressed size 1:", result1.decompressedData.length);
-    console.log("Consumed bytes 1:", result1.consumed);
+    console.log("Decompressed size 1:", result0.decompressedData.length);
+    console.log("Consumed bytes 1:", result0.consumed);
 
     // Feed second chunk
-    const result2 = decompressor.feed(compressedArray1);
+    const result1 = decompressor.feed(compressedArray1);
     console.log("Compressed size 2:", compressedArray1.length);
-    console.log("Decompressed size 2:", result2.decompressedData.length);
-    console.log("Consumed bytes 2:", result2.consumed);
+    console.log("Decompressed size 2:", result1.decompressedData.length);
+    console.log("Consumed bytes 2:", result1.consumed);
+
+    const result2 = decompressor.feed(compressedArray2);
+    console.log("Compressed size 2:", compressedArray1.length);
+    console.log("Decompressed size 2:", result1.decompressedData.length);
+    console.log("Consumed bytes 2:", result1.consumed);
   } finally {
     decompressor.destroy();
   }
@@ -198,8 +222,9 @@ async function decompressFrames(
 async function example1() {
   const frame1 = hexStringToUint8Array(hexDump1_0);
   const frame2 = hexStringToUint8Array(hexDump1_1);
+  const frame3 = hexStringToUint8Array(hexDump1_2);
 
-  decompressFrames(frame1, frame2);
+  decompressFrames(frame1, frame2, frame3);
 }
 
 example1();
