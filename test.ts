@@ -33,17 +33,22 @@ function hexStringToUint8Array(hexString: string): Uint8Array {
   return uint8Array;
 }
 
+// Global reference to the loaded ZSTD WebAssembly module
 let zstdModule: any;
 
 // Function to load the WASM module
+// expects two files in the same directory:
+// 1 wasm.js: The Emscripten-generated JavaScript glue code
+// 2 wasm.wasm: The WebAssembly binary
 async function loadZstdModule() {
   return new Promise((resolve, reject) => {
     const wasmJsPath = path.join(__dirname, "wasm.js");
 
-    // Read the JavaScript loader
+    // Read the JavaScript loader gen by Emscripten
     const wasmJs = fs.readFileSync(wasmJsPath, "utf8");
 
     // Create a minimal environment for the Emscripten loader
+    // provide content for Warm module
     const Module: any = {
       wasmBinary: fs.readFileSync(path.join(__dirname, "wasm.wasm")),
       onRuntimeInitialized: () => {
@@ -66,99 +71,132 @@ async function loadZstdModule() {
   });
 }
 
+// output of decompression
 interface ZSTDResult {
   decompressedData: Uint8Array;
-  consumed: number;
+  consumed: number; // input bytes consumed
 }
 
+/*
+Usage:
+ * ```
+ * const decompressor = new ZSTDDecompressor(zstdModule);
+ * try {
+ *   while (hasMoreData) {
+ *     const chunk = await getNextChunk();
+ *     const result = decompressor.feed(chunk);
+ *     processDecompressedData(result.decompressedData);
+ *   }
+ * } finally {
+ *   decompressor.destroy();
+ * }
+*/
 class ZSTDDecompressor {
-  private zstdModule: any;
-  private dctx: number;
-  private inBufferSize: number;
+  private zstdWASMModule: any;
+  private dCtxPtr: number;
+  private inputBufferSize: number;
   private outBufferSize: number;
-  private inPtr: number;
-  private outPtr: number;
+  private inputPtrWASMBuffer: number;
+  private outPtrWASMBuffer: number;
 
   constructor(zstdModule: any) {
-    this.zstdModule = zstdModule;
-    this.dctx = this.zstdModule._ZSTD_createDStream();
-    
-    // Initialize with reasonable buffer sizes
-    this.inBufferSize = 32 * 1024;  // 32KB
-    this.outBufferSize = 128 * 1024; // 128KB
-    
-    // Allocate fixed buffers
-    this.inPtr = this.zstdModule._malloc(this.inBufferSize);
-    this.outPtr = this.zstdModule._malloc(this.outBufferSize);
+    this.zstdWASMModule = zstdModule;
 
-    const initResult = this.zstdModule._ZSTD_initDStream(this.dctx);
-    if (this.zstdModule._ZSTD_isError(initResult)) {
+    // Create a new decompression stream
+
+    this.dCtxPtr = this.zstdWASMModule._ZSTD_createDStream();
+
+    // Initialize with buffer sizes
+    this.inputBufferSize = 32 * 1024; // 32KB
+    this.outBufferSize = 128 * 1024; // 128KB
+
+    // Allocate fixed buffers for reuse
+    this.inputPtrWASMBuffer = this.zstdWASMModule._malloc(this.inputBufferSize);
+    this.outPtrWASMBuffer = this.zstdWASMModule._malloc(this.outBufferSize);
+
+    // Initialize the decompression stream
+    const initResult = this.zstdWASMModule._ZSTD_initDStream(this.dCtxPtr);
+    if (this.zstdWASMModule._ZSTD_isError(initResult)) {
       throw new Error(
-        `Failed to initialize dstream: ${this.zstdModule.UTF8ToString(
-          this.zstdModule._ZSTD_getErrorName(initResult)
+        `Failed to initialize dstream: ${this.zstdWASMModule.UTF8ToString(
+          this.zstdWASMModule._ZSTD_getErrorName(initResult)
         )}`
       );
     }
   }
 
+  // can be called multiple times with consecutive chunks of compressed data
   feed(chunk: Uint8Array): ZSTDResult {
-    let pos = 0;
+    let posInInputChunk = 0;
     let decompressedChunks: Uint8Array[] = [];
-    
-    while (pos < chunk.length) {
-      // Copy input chunk to input buffer
-      const remainingInput = chunk.length - pos;
-      const bytesToCopy = Math.min(remainingInput, this.inBufferSize);
-      this.zstdModule.HEAPU8.set(chunk.subarray(pos, pos + bytesToCopy), this.inPtr);
+
+    // Process input chunk in smaller pieces if it's larger than our buffer
+
+    while (posInInputChunk < chunk.length) {
+      // Copy input chunk to input WASMP buffer
+      const remainingInput = chunk.length - posInInputChunk;
+      const bytesToCopy = Math.min(remainingInput, this.inputBufferSize);
+      this.zstdWASMModule.HEAPU8.set(
+        chunk.subarray(posInInputChunk, posInInputChunk + bytesToCopy),
+        this.inputPtrWASMBuffer
+      );
 
       // Setup ZSTD_inBuffer
-      const inBufferPtr = this.zstdModule._malloc(12); // size of ZSTD_inBuffer struct
-      this.zstdModule.HEAPU32[inBufferPtr >> 2] = this.inPtr; // src
-      this.zstdModule.HEAPU32[(inBufferPtr >> 2) + 1] = bytesToCopy; // size
-      this.zstdModule.HEAPU32[(inBufferPtr >> 2) + 2] = 0; // pos
+      const inBufferPtr = this.zstdWASMModule._malloc(12); // size of ZSTD_inBuffer struct
+      this.zstdWASMModule.HEAPU32[inBufferPtr >> 2] = this.inputPtrWASMBuffer; // src
+      this.zstdWASMModule.HEAPU32[(inBufferPtr >> 2) + 1] = bytesToCopy; // size
+      this.zstdWASMModule.HEAPU32[(inBufferPtr >> 2) + 2] = 0; // pos
 
       // Setup ZSTD_outBuffer
-      const outBufferPtr = this.zstdModule._malloc(12); // size of ZSTD_outBuffer struct
-      this.zstdModule.HEAPU32[outBufferPtr >> 2] = this.outPtr; // dst
-      this.zstdModule.HEAPU32[(outBufferPtr >> 2) + 1] = this.outBufferSize; // size
-      this.zstdModule.HEAPU32[(outBufferPtr >> 2) + 2] = 0; // pos
+      const outBufferPtr = this.zstdWASMModule._malloc(12); // size of ZSTD_outBuffer struct
+      this.zstdWASMModule.HEAPU32[outBufferPtr >> 2] = this.outPtrWASMBuffer; // dst
+      this.zstdWASMModule.HEAPU32[(outBufferPtr >> 2) + 1] = this.outBufferSize; // size
+      this.zstdWASMModule.HEAPU32[(outBufferPtr >> 2) + 2] = 0; // pos
 
       try {
         // Decompress
-        const result = this.zstdModule._ZSTD_decompressStream(
-          this.dctx,
+        const result = this.zstdWASMModule._ZSTD_decompressStream(
+          this.dCtxPtr,
           outBufferPtr,
           inBufferPtr
         );
 
-        if (this.zstdModule._ZSTD_isError(result)) {
+        if (this.zstdWASMModule._ZSTD_isError(result)) {
           throw new Error(
-            `Decompression failed: ${this.zstdModule.UTF8ToString(
-              this.zstdModule._ZSTD_getErrorName(result)
+            `Decompression failed: ${this.zstdWASMModule.UTF8ToString(
+              this.zstdWASMModule._ZSTD_getErrorName(result)
             )}`
           );
         }
 
-        const bytesConsumed = this.zstdModule.HEAPU32[(inBufferPtr >> 2) + 2]; // input pos
-        const bytesProduced = this.zstdModule.HEAPU32[(outBufferPtr >> 2) + 2]; // output pos
+        const bytesConsumed =
+          this.zstdWASMModule.HEAPU32[(inBufferPtr >> 2) + 2]; // input pos
+        const bytesProduced =
+          this.zstdWASMModule.HEAPU32[(outBufferPtr >> 2) + 2]; // output pos
 
         if (bytesProduced > 0) {
           const decompressed = new Uint8Array(bytesProduced);
           decompressed.set(
-            this.zstdModule.HEAPU8.subarray(this.outPtr, this.outPtr + bytesProduced)
+            this.zstdWASMModule.HEAPU8.subarray(
+              this.outPtrWASMBuffer,
+              this.outPtrWASMBuffer + bytesProduced
+            )
           );
           decompressedChunks.push(decompressed);
         }
 
-        pos += bytesConsumed;
+        posInInputChunk += bytesConsumed;
       } finally {
-        this.zstdModule._free(inBufferPtr);
-        this.zstdModule._free(outBufferPtr);
+        this.zstdWASMModule._free(inBufferPtr);
+        this.zstdWASMModule._free(outBufferPtr);
       }
     }
 
     // Combine all decompressed chunks
-    const totalSize = decompressedChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const totalSize = decompressedChunks.reduce(
+      (sum, chunk) => sum + chunk.length,
+      0
+    );
     const result = new Uint8Array(totalSize);
     let offset = 0;
     for (const chunk of decompressedChunks) {
@@ -168,22 +206,22 @@ class ZSTDDecompressor {
 
     return {
       decompressedData: result,
-      consumed: pos
+      consumed: posInInputChunk,
     };
   }
 
   destroy() {
-    if (this.dctx) {
-      this.zstdModule._ZSTD_freeDStream(this.dctx);
-      this.dctx = 0;
+    if (this.dCtxPtr) {
+      this.zstdWASMModule._ZSTD_freeDStream(this.dCtxPtr);
+      this.dCtxPtr = 0;
     }
-    if (this.inPtr) {
-      this.zstdModule._free(this.inPtr);
-      this.inPtr = 0;
+    if (this.inputPtrWASMBuffer) {
+      this.zstdWASMModule._free(this.inputPtrWASMBuffer);
+      this.inputPtrWASMBuffer = 0;
     }
-    if (this.outPtr) {
-      this.zstdModule._free(this.outPtr);
-      this.outPtr = 0;
+    if (this.outPtrWASMBuffer) {
+      this.zstdWASMModule._free(this.outPtrWASMBuffer);
+      this.outPtrWASMBuffer = 0;
     }
   }
 }
@@ -195,7 +233,6 @@ async function example() {
   const frame0 = hexStringToUint8Array(hexDump1_0);
   const frame1 = hexStringToUint8Array(hexDump1_1);
   const frame2 = hexStringToUint8Array(hexDump1_2);
-
 
   try {
     // Feed first chunk
