@@ -237,10 +237,321 @@ async function decompressTest() {
   }
 }
 
-decompressTest()
-  .then(() => {
-    console.log("successfully");
-  })
-  .catch((error) => {
-    console.log(error);
-  });
+class DecompressZSTD {
+  private zstdModule: any;
+  private dStream: any;
+  private frameBuffer: Uint8Array;
+  private frameBufferPos: number;
+
+  constructor(zstdModule: any) {
+    this.zstdModule = zstdModule;
+    this.dStream = null;
+    this.frameBuffer = new Uint8Array(0);
+    this.frameBufferPos = 0;
+    this.initDStream();
+  }
+
+  private initDStream() {
+    if (this.dStream) {
+      this.zstdModule._ZSTD_freeDStream(this.dStream);
+    }
+    this.dStream = this.zstdModule._ZSTD_createDStream();
+    const initResult = this.zstdModule._ZSTD_initDStream(this.dStream);
+    if (this.zstdModule._ZSTD_isError(initResult)) {
+      throw new Error(`Failed to initialize dStream: ${this.zstdModule.UTF8ToString(this.zstdModule._ZSTD_getErrorName(initResult))}`);
+    }
+  }
+
+  private readVarint32(data: Uint8Array, offset: number): [number, number] {
+    let result = 0;
+    let shift = 0;
+    let bytesRead = 0;
+
+    while (true) {
+      if (offset + bytesRead >= data.length) {
+        return [-1, 0]; // Incomplete varint
+      }
+
+      const byte = data[offset + bytesRead];
+      result |= (byte & 0x7F) << shift;
+      bytesRead++;
+
+      if ((byte & 0x80) === 0) {
+        break;
+      }
+
+      shift += 7;
+      if (shift >= 32) {
+        throw new Error("Varint32 too long");
+      }
+    }
+
+    return [result, bytesRead];
+  }
+
+  private ensureBufferCapacity(needed: number) {
+    if (this.frameBufferPos + needed > this.frameBuffer.length) {
+      const newBuffer = new Uint8Array(Math.max(this.frameBuffer.length * 2, this.frameBufferPos + needed));
+      newBuffer.set(this.frameBuffer);
+      this.frameBuffer = newBuffer;
+    }
+  }
+
+  // Feed compressed data frame by frame
+  feedData(compressedData: Uint8Array): Uint8Array[] {
+    // Append new data to our frame buffer
+    this.ensureBufferCapacity(compressedData.length);
+    this.frameBuffer.set(compressedData, this.frameBufferPos);
+    this.frameBufferPos += compressedData.length;
+
+    const results: Uint8Array[] = [];
+    let offset = 0;
+
+    while (offset < this.frameBufferPos) {
+      // Need at least 1 byte for header
+      if (offset + 1 > this.frameBufferPos) break;
+
+      const header = this.frameBuffer[offset];
+      const [payloadSize, varintSize] = this.readVarint32(this.frameBuffer, offset + 1);
+      
+      if (payloadSize === -1) break; // Incomplete varint
+      if (payloadSize > 32 * 1024 * 1024) throw new Error("Payload size too large");
+
+      const frameHeaderSize = 1 + varintSize;
+      const totalFrameSize = frameHeaderSize + payloadSize;
+
+      // Check if we have the complete frame
+      if (offset + totalFrameSize > this.frameBufferPos) break;
+
+      // Process this frame
+      const frameData = this.frameBuffer.slice(offset + frameHeaderSize, offset + totalFrameSize);
+      
+      if (header & 1) { // Compressed frame
+        const decompressed = this.decompressFrame(frameData);
+        if (decompressed) {
+          results.push(decompressed);
+        }
+      } else { // Uncompressed frame
+        results.push(frameData.slice(0));
+      }
+
+      offset += totalFrameSize;
+    }
+
+    // Remove processed data from buffer
+    if (offset > 0) {
+      this.frameBuffer.set(this.frameBuffer.slice(offset));
+      this.frameBufferPos -= offset;
+    }
+
+    return results;
+  }
+
+  private decompressFrame(compressedData: Uint8Array): Uint8Array {
+    const BUFFER_SIZE = 32 * 1024; // 32KB buffer for decompressed data
+    let decompressedSize = 0;
+    let totalDecompressed = new Uint8Array(0);
+
+    // Allocate input buffer
+    const inPtr = this.zstdModule._malloc(compressedData.length);
+    const outPtr = this.zstdModule._malloc(BUFFER_SIZE);
+
+    try {
+      // Copy input data
+      this.zstdModule.HEAPU8.set(compressedData, inPtr);
+
+      let inPosition = 0;
+      let needsMoreOutput = true;
+
+      while (inPosition < compressedData.length || needsMoreOutput) {
+        // Set up input buffer
+        const inSize = compressedData.length - inPosition;
+        const inOffset = inPosition;
+
+        // Decompress
+        const decompressed = this.zstdModule._ZSTD_decompressStream(
+          this.dStream,
+          outPtr, BUFFER_SIZE,  // out buffer
+          inPtr + inOffset, inSize  // in buffer
+        );
+
+        if (this.zstdModule._ZSTD_isError(decompressed)) {
+          throw new Error(`Decompression failed: ${this.zstdModule.UTF8ToString(this.zstdModule._ZSTD_getErrorName(decompressed))}`);
+        }
+
+        // Copy output
+        const newData = this.zstdModule.HEAPU8.slice(outPtr, outPtr + decompressed);
+        const newBuffer = new Uint8Array(totalDecompressed.length + newData.length);
+        newBuffer.set(totalDecompressed);
+        newBuffer.set(newData, totalDecompressed.length);
+        totalDecompressed = newBuffer;
+
+        decompressedSize += decompressed;
+        inPosition = inOffset + inSize;
+        needsMoreOutput = (decompressed === BUFFER_SIZE);
+      }
+
+      return totalDecompressed;
+    } finally {
+      // Clean up
+      this.zstdModule._free(inPtr);
+      this.zstdModule._free(outPtr);
+    }
+  }
+
+  // Clean up resources
+  destroy() {
+    if (this.dStream) {
+      this.zstdModule._ZSTD_freeDStream(this.dStream);
+      this.dStream = null;
+    }
+  }
+}
+
+// Example usage:
+async function example() {
+  // Initialize ZSTD module first
+  const zstdModule = await loadZstdModule(); // Your module loading function
+
+  const decompressor = new DecompressZSTD(zstdModule);
+
+  // Feed compressed data frames
+  const frame1 = hexStringToUint8Array(hexDump1_0);
+  const frame2 = hexStringToUint8Array(hexDump1_1);
+
+  // Get decompressed data
+  const results1 = decompressor.feedData(frame1);
+  const results2 = decompressor.feedData(frame2);
+
+  console.log(results1.length);
+  console.log(results2.length);
+
+  // Clean up when done
+  decompressor.destroy();
+}
+
+interface ZSTDResult {
+  decompressedData: Uint8Array;
+  consumed: number;
+}
+
+class ZSTDDecompressor {
+  private zstdModule: any;
+  private dctx: any;
+  private buffer: Uint8Array;
+  private bufferOffset: number;
+
+  constructor(zstdModule: any) {
+    this.zstdModule = zstdModule;
+    this.dctx = this.zstdModule._ZSTD_createDStream();
+    this.buffer = new Uint8Array(0);
+    this.bufferOffset = 0;
+    
+    const initResult = this.zstdModule._ZSTD_initDStream(this.dctx);
+    if (this.zstdModule._ZSTD_isError(initResult)) {
+      throw new Error(`Failed to initialize dstream: ${this.zstdModule.UTF8ToString(this.zstdModule._ZSTD_getErrorName(initResult))}`);
+    }
+  }
+
+  feed(chunk: Uint8Array): ZSTDResult {
+    // Append new data to existing buffer
+    const newBuffer = new Uint8Array(this.buffer.length - this.bufferOffset + chunk.length);
+    newBuffer.set(this.buffer.subarray(this.bufferOffset));
+    newBuffer.set(chunk, this.buffer.length - this.bufferOffset);
+    this.buffer = newBuffer;
+    this.bufferOffset = 0;
+
+    // Allocate input/output buffers
+    const inBufSize = this.buffer.length;
+    const outBufSize = inBufSize * 4; // Conservative estimate, adjust as needed
+    
+    const inPtr = this.zstdModule._malloc(inBufSize);
+    const outPtr = this.zstdModule._malloc(outBufSize);
+
+    try {
+      // Copy input data
+      this.zstdModule.HEAPU8.set(this.buffer, inPtr);
+
+      // Setup ZSTD_inBuffer
+      const inBuffer = {
+        src: inPtr,
+        size: inBufSize,
+        pos: 0
+      };
+
+      // Setup ZSTD_outBuffer  
+      const outBuffer = {
+        dst: outPtr,
+        size: outBufSize,
+        pos: 0
+      };
+
+      // Decompress
+      const result = this.zstdModule._ZSTD_decompressStream(
+        this.dctx,
+        outBuffer,
+        inBuffer
+      );
+
+      if (this.zstdModule._ZSTD_isError(result)) {
+        throw new Error(`Decompression failed: ${this.zstdModule.UTF8ToString(this.zstdModule._ZSTD_getErrorName(result))}`);
+      }
+
+      // Copy output
+      const decompressed = new Uint8Array(outBuffer.pos);
+      decompressed.set(this.zstdModule.HEAPU8.subarray(outPtr, outPtr + outBuffer.pos));
+
+      // Update buffer offset
+      this.bufferOffset += inBuffer.pos;
+
+      return {
+        decompressedData: decompressed,
+        consumed: inBuffer.pos
+      };
+
+    } finally {
+      this.zstdModule._free(inPtr);
+      this.zstdModule._free(outPtr);
+    }
+  }
+
+  destroy() {
+    if (this.dctx) {
+      this.zstdModule._ZSTD_freeDStream(this.dctx);
+      this.dctx = null;
+    }
+  }
+}
+
+// Usage example:
+async function decompressFrames(compressedArray0: Uint8Array, compressedArray1: Uint8Array) {
+  const zstd = await loadZstdModule(); // Your module loading function
+  const decompressor = new ZSTDDecompressor(zstd);
+
+  try {
+    // Feed first chunk
+    const result1 = decompressor.feed(compressedArray0);
+    console.log("Compressed size 1:", compressedArray0.length);
+    console.log("Decompressed size 1:", result1.decompressedData.length);
+    console.log("Consumed bytes 1:", result1.consumed);
+
+    // Feed second chunk
+    const result2 = decompressor.feed(compressedArray1);
+    console.log("Compressed size 2:", compressedArray1.length);
+    console.log("Decompressed size 2:", result2.decompressedData.length);
+    console.log("Consumed bytes 2:", result2.consumed);
+
+  } finally {
+    decompressor.destroy();
+  }
+}
+
+
+async function example1() {
+  const frame1 = hexStringToUint8Array(hexDump1_0);
+  const frame2 = hexStringToUint8Array(hexDump1_1);
+
+  decompressFrames(frame1, frame2);
+}
+
+example1();
