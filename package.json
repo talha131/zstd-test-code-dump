@@ -2,7 +2,10 @@
   "name": "test-project",
   "version": "1.0.0",
   "type": "module",
+  "dependencies": {
+    "package-name": "file:../zstd-js"
+  },
   "devDependencies": {
-    "@types/node": "^22.10.2"
+    "@types/node": "^22.10.3"
   }
 }
