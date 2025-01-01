@@ -188,43 +188,35 @@ class ZSTDDecompressor {
   }
 }
 
-// Usage example:
-async function decompressFrames(
-  compressedArray0: Uint8Array,
-  compressedArray1: Uint8Array,
-  compressedArray2: Uint8Array
-) {
+async function example() {
   const zstd = await loadZstdModule(); // Your module loading function
   const decompressor = new ZSTDDecompressor(zstd);
 
+  const frame0 = hexStringToUint8Array(hexDump1_0);
+  const frame1 = hexStringToUint8Array(hexDump1_1);
+  const frame2 = hexStringToUint8Array(hexDump1_2);
+
+
   try {
     // Feed first chunk
-    const result0 = decompressor.feed(compressedArray0);
-    console.log("Compressed size 1:", compressedArray0.length);
+    const result0 = decompressor.feed(frame0);
+    console.log("Compressed size 1:", frame0.length);
     console.log("Decompressed size 1:", result0.decompressedData.length);
     console.log("Consumed bytes 1:", result0.consumed);
 
     // Feed second chunk
-    const result1 = decompressor.feed(compressedArray1);
-    console.log("Compressed size 2:", compressedArray1.length);
+    const result1 = decompressor.feed(frame1);
+    console.log("Compressed size 2:", frame1.length);
     console.log("Decompressed size 2:", result1.decompressedData.length);
     console.log("Consumed bytes 2:", result1.consumed);
 
-    const result2 = decompressor.feed(compressedArray2);
-    console.log("Compressed size 2:", compressedArray1.length);
-    console.log("Decompressed size 2:", result1.decompressedData.length);
-    console.log("Consumed bytes 2:", result1.consumed);
+    const result2 = decompressor.feed(frame2);
+    console.log("Compressed size 3:", frame2.length);
+    console.log("Decompressed size 3:", result2.decompressedData.length);
+    console.log("Consumed bytes 3:", result2.consumed);
   } finally {
     decompressor.destroy();
   }
 }
 
-async function example1() {
-  const frame1 = hexStringToUint8Array(hexDump1_0);
-  const frame2 = hexStringToUint8Array(hexDump1_1);
-  const frame3 = hexStringToUint8Array(hexDump1_2);
-
-  decompressFrames(frame1, frame2, frame3);
-}
-
-example1();
+example();
