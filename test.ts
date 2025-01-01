@@ -1,7 +1,7 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { createRequire } from 'module';
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import { createRequire } from "module";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -159,14 +159,14 @@ let zstdModule: any;
 // Function to load the WASM module
 async function loadZstdModule() {
   return new Promise((resolve, reject) => {
-    const wasmJsPath = path.join(__dirname, 'wasm.js');
-    
+    const wasmJsPath = path.join(__dirname, "wasm.js");
+
     // Read the JavaScript loader
-    const wasmJs = fs.readFileSync(wasmJsPath, 'utf8');
-    
+    const wasmJs = fs.readFileSync(wasmJsPath, "utf8");
+
     // Create a minimal environment for the Emscripten loader
     const Module: any = {
-      wasmBinary: fs.readFileSync(path.join(__dirname, 'wasm.wasm')),
+      wasmBinary: fs.readFileSync(path.join(__dirname, "wasm.wasm")),
       onRuntimeInitialized: () => {
         zstdModule = Module;
         resolve(Module);
@@ -181,9 +181,9 @@ async function loadZstdModule() {
       __filename,
       __dirname,
     };
-    
-    const vmContext = require('vm').createContext(evalContext);
-    require('vm').runInContext(wasmJs, vmContext);
+
+    const vmContext = require("vm").createContext(evalContext);
+    require("vm").runInContext(wasmJs, vmContext);
   });
 }
 
@@ -203,6 +203,10 @@ function decompress(input: Uint8Array, originalSize: number): Uint8Array {
     inputBuffer.length
   );
 
+  if (decompressedSize < 0) {
+    throw new Error(`Talha ZSTD decompression failed: ${decompressedSize}`);
+  }
+
   const result = new Uint8Array(
     zstdModule.HEAPU8.buffer,
     outputPtr,
@@ -220,15 +224,12 @@ async function decompressTest() {
   await loadZstdModule(); // Load the WASM module before using it
 
   const compressedArray0 = hexStringToUint8Array(hexDump1_0);
-  const compressedArray1 = hexStringToUint8Array(hexDump1_1);
+  // const compressedArray1 = hexStringToUint8Array(hexDump1_1);
 
   try {
-    const originalSize = compressedArray0.length + compressedArray1.length;
-    const fullCompressedArray = new Uint8Array(originalSize);
-    fullCompressedArray.set(compressedArray0);
-    fullCompressedArray.set(compressedArray1, compressedArray0.length);
+    const originalSize = compressedArray0.length;
 
-    const decompressedData = decompress(fullCompressedArray, originalSize * 10);
+    const decompressedData = decompress(compressedArray0, originalSize * 100);
     console.log("Decompressed size:", decompressedData.length);
   } catch (error) {
     console.error("Error decompressing file:", error);
