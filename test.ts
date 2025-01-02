@@ -481,7 +481,7 @@ class ZSTDDecompressor {
 }
 
 async function example() {
-  const zstd = await loadZstdModule(); // Your module loading function
+  const zstd = await loadZstdModule();
 
   const decompressThenCompressThenVerify = (
     decompressor: ZSTDDecompressor,
@@ -490,70 +490,43 @@ async function example() {
     i: number
   ) => {
     const frame = hexStringToUint8Array(d);
-    console.log("Original Compressed size", i + 1, ":", frame.length);
+    console.log(`Original Compressed size ${i + 1}: ${frame.length}`);
 
-    const result = decompressor.feed(frame);
-    console.log(
-      "Decompressed size",
-      i + 1,
-      ":",
-      result.decompressedData.length
-    );
+    const decompressedResult = decompressor.feed(frame);
+    console.log(`Decompressed size ${i + 1}: ${decompressedResult.decompressedData.length}`);
+    console.log(`Consumed bytes for decompression ${i + 1}: ${decompressedResult.consumed}`);
 
-    console.log(
-      "Consumed bytes for decompression",
-      i + 1,
-      ":",
-      result.consumed
-    );
+    const compressedResult = compressor.feed(decompressedResult.decompressedData);
+    console.log(`Compressed size ${i + 1}: ${compressedResult.compressedData.length}`);
+    console.log(`Consumed bytes for compression ${i + 1}: ${compressedResult.consumed}`);
 
-    // Now compress the result
-    const compressed = compressor.feed(result.decompressedData);
-    console.log(
-      "Compressed size",
-      i + 1,
-      ":",
-      compressed.compressedData.length
-    );
-    console.log(
-      "Consumed bytes for compression",
-      i + 1,
-      ":",
-      compressed.consumed
-    );
-
-    // Now verify the compressed data
-    if (compressed.compressedData.length !== frame.length) {
-      console.error("Compression failed");
+    if (compressedResult.compressedData.length !== frame.length) {
+      console.log("ERROR Lengths do not match");
+      console.log(`Compressed size ${i + 1}: ${compressedResult.compressedData.length}`);
+      console.log(`Original Compressed size ${i + 1}: ${frame.length}`);
+      throw new Error("Compression failed: lengths do not match");
     }
 
-    // Now verrify by comparing the Uint8Arrays
-    if (
-      !compressed.compressedData.every((value, index) => value === frame[index])
-    ) {
-      console.error("Compression failed");
+    if (!compressedResult.compressedData.every((value, index) => value === frame[index])) {
+      throw new Error("Compression failed: data mismatch");
     }
   };
 
-  const compressor0 = new ZSTDCompressor(zstd);
-  const decompressor0 = new ZSTDDecompressor(zstd);
-  try {
-    hexDump0.forEach((d, i) => {
-      decompressThenCompressThenVerify(decompressor0, compressor0, d, i);
-    });
-  } finally {
-    decompressor0.destroy();
-  }
+  const processHexDump = async (hexDump: string[]) => {
+    const compressor = new ZSTDCompressor(zstd);
+    const decompressor = new ZSTDDecompressor(zstd);
+    try {
+      await Promise.all(hexDump.map((d, i) => 
+        decompressThenCompressThenVerify(decompressor, compressor, d, i)
+      ));
+    } finally {
+      decompressor.destroy();
+      compressor.destroy();
+    }
+  };
 
-  const compressor1 = new ZSTDCompressor(zstd);
-  const decompressor1 = new ZSTDDecompressor(zstd);
-  try {
-    hexDump1.forEach((d, i) => {
-      decompressThenCompressThenVerify(decompressor1, compressor1, d, i);
-    });
-  } finally {
-    decompressor1.destroy();
-  }
+  await processHexDump(hexDump0);
+  await processHexDump(hexDump1);
 }
 
 example();
