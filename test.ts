@@ -55,7 +55,7 @@ const hexDump1 = [
 0x32, 0x00, 0x3a, 0x00, 0x42, 0x00, 0x4a, 0x00, 0x12, 0x28, 0x12, 0x08, 0x08, 0x00, 0x10, 0x11, 
 0x18, 0x0d, 0x20, 0x08, 0x1a, 0x08, 0x08, 0x00, 0x10, 0x01, 0x18, 0x01, 0x20, 0x08, 0x22, 0x08, 
 0x08, 0x00, 0x10, 0x02, 0x18, 0x01, 0x20, 0x07, 0x2a, 0x08, 0x08, 0x10, 0x10, 0x24, 0x18, 0x16, 
-0x20, 0x07,
+0x20, 0x07
 `,
   `
 0xd4, 0x03, 0x00, 0xd2, 0x86, 0x19, 0x23, 0xa0, 0x29, 0x1d, 0x13, 0xa9, 0xa8, 0xaf, 0xaa, 0x13, 
@@ -163,66 +163,58 @@ class ZSTDCompressor {
   private inPtr: number;
   private outPtr: number;
 
-  constructor(zstdModule: any, compressionLevel: number = 3) {
+  constructor(zstdModule: any) {
     this.zstdModule = zstdModule;
     this.cctx = this.zstdModule._ZSTD_createCStream();
-
-    // Initialize with reasonable buffer sizes
-    this.inBufferSize = 32 * 1024; // 32KB
-    this.outBufferSize = 128 * 1024; // 128KB - larger for compression
-
-    // Allocate fixed buffers
-    this.inPtr = this.zstdModule._malloc(this.inBufferSize);
-    this.outPtr = this.zstdModule._malloc(this.outBufferSize);
-
-    const initResult = this.zstdModule._ZSTD_initCStream(
-      this.cctx,
-      compressionLevel
-    );
+    
+    // Initialize with default compression level
+    const initResult = this.zstdModule._ZSTD_initCStream(this.cctx, 3); // ZSTD_CLEVEL_DEFAULT is usually 3
     if (this.zstdModule._ZSTD_isError(initResult)) {
       throw new Error(
-        `Failed to initialize cstream: ${this.zstdModule.UTF8ToString(
+        `Failed to initialize compression stream: ${this.zstdModule.UTF8ToString(
           this.zstdModule._ZSTD_getErrorName(initResult)
         )}`
       );
     }
+
+    // Initialize with reasonable buffer sizes
+    this.inBufferSize = 32 * 1024;  // 32KB
+    this.outBufferSize = this.zstdModule._ZSTD_compressBound(this.inBufferSize);
+    
+    // Allocate fixed buffers
+    this.inPtr = this.zstdModule._malloc(this.inBufferSize);
+    this.outPtr = this.zstdModule._malloc(this.outBufferSize);
   }
 
-  feed(chunk: Uint8Array, isLastChunk: boolean = false): ZSTDCompressedResult {
+  feed(chunk: Uint8Array): ZSTDCompressedResult {
     let pos = 0;
     let compressedChunks: Uint8Array[] = [];
-
+    
     while (pos < chunk.length) {
       // Copy input chunk to input buffer
       const remainingInput = chunk.length - pos;
       const bytesToCopy = Math.min(remainingInput, this.inBufferSize);
-      this.zstdModule.HEAPU8.set(
-        chunk.subarray(pos, pos + bytesToCopy),
-        this.inPtr
-      );
+      this.zstdModule.HEAPU8.set(chunk.subarray(pos, pos + bytesToCopy), this.inPtr);
 
       // Setup ZSTD_inBuffer
-      const inBufferPtr = this.zstdModule._malloc(12); // size of ZSTD_inBuffer struct
-      this.zstdModule.HEAPU32[inBufferPtr >> 2] = this.inPtr; // src
-      this.zstdModule.HEAPU32[(inBufferPtr >> 2) + 1] = bytesToCopy; // size
-      this.zstdModule.HEAPU32[(inBufferPtr >> 2) + 2] = 0; // pos
+      const inBufferPtr = this.zstdModule._malloc(12);
+      this.zstdModule.HEAPU32[inBufferPtr >> 2] = this.inPtr;
+      this.zstdModule.HEAPU32[(inBufferPtr >> 2) + 1] = bytesToCopy;
+      this.zstdModule.HEAPU32[(inBufferPtr >> 2) + 2] = 0;
 
       // Setup ZSTD_outBuffer
-      const outBufferPtr = this.zstdModule._malloc(12); // size of ZSTD_outBuffer struct
-      this.zstdModule.HEAPU32[outBufferPtr >> 2] = this.outPtr; // dst
-      this.zstdModule.HEAPU32[(outBufferPtr >> 2) + 1] = this.outBufferSize; // size
-      this.zstdModule.HEAPU32[(outBufferPtr >> 2) + 2] = 0; // pos
+      const outBufferPtr = this.zstdModule._malloc(12);
+      this.zstdModule.HEAPU32[outBufferPtr >> 2] = this.outPtr;
+      this.zstdModule.HEAPU32[(outBufferPtr >> 2) + 1] = this.outBufferSize;
+      this.zstdModule.HEAPU32[(outBufferPtr >> 2) + 2] = 0;
 
       try {
         // Compress
-        const result =
-          isLastChunk && pos + bytesToCopy === chunk.length
-            ? this.zstdModule._ZSTD_endStream(this.cctx, outBufferPtr)
-            : this.zstdModule._ZSTD_compressStream(
-                this.cctx,
-                outBufferPtr,
-                inBufferPtr
-              );
+        const result = this.zstdModule._ZSTD_compressStream(
+          this.cctx,
+          outBufferPtr,
+          inBufferPtr
+        );
 
         if (this.zstdModule._ZSTD_isError(result)) {
           throw new Error(
@@ -232,37 +224,54 @@ class ZSTDCompressor {
           );
         }
 
-        const bytesConsumed = this.zstdModule.HEAPU32[(inBufferPtr >> 2) + 2]; // input pos
-        const bytesProduced = this.zstdModule.HEAPU32[(outBufferPtr >> 2) + 2]; // output pos
+        const bytesConsumed = this.zstdModule.HEAPU32[(inBufferPtr >> 2) + 2];
+        const bytesProduced = this.zstdModule.HEAPU32[(outBufferPtr >> 2) + 2];
 
         if (bytesProduced > 0) {
           const compressed = new Uint8Array(bytesProduced);
           compressed.set(
-            this.zstdModule.HEAPU8.subarray(
-              this.outPtr,
-              this.outPtr + bytesProduced
-            )
+            this.zstdModule.HEAPU8.subarray(this.outPtr, this.outPtr + bytesProduced)
           );
           compressedChunks.push(compressed);
         }
 
         pos += bytesConsumed;
-
-        // If this is the end stream and we need more output buffer
-        if (isLastChunk && result > 0) {
-          continue;
-        }
       } finally {
         this.zstdModule._free(inBufferPtr);
         this.zstdModule._free(outBufferPtr);
       }
     }
 
+    // Flush the stream
+    const outBufferPtr = this.zstdModule._malloc(12);
+    this.zstdModule.HEAPU32[outBufferPtr >> 2] = this.outPtr;
+    this.zstdModule.HEAPU32[(outBufferPtr >> 2) + 1] = this.outBufferSize;
+    this.zstdModule.HEAPU32[(outBufferPtr >> 2) + 2] = 0;
+
+    try {
+      const flushResult = this.zstdModule._ZSTD_flushStream(this.cctx, outBufferPtr);
+      if (this.zstdModule._ZSTD_isError(flushResult)) {
+        throw new Error(
+          `Flush failed: ${this.zstdModule.UTF8ToString(
+            this.zstdModule._ZSTD_getErrorName(flushResult)
+          )}`
+        );
+      }
+
+      const bytesProduced = this.zstdModule.HEAPU32[(outBufferPtr >> 2) + 2];
+      if (bytesProduced > 0) {
+        const flushData = new Uint8Array(bytesProduced);
+        flushData.set(
+          this.zstdModule.HEAPU8.subarray(this.outPtr, this.outPtr + bytesProduced)
+        );
+        compressedChunks.push(flushData);
+      }
+    } finally {
+      this.zstdModule._free(outBufferPtr);
+    }
+
     // Combine all compressed chunks
-    const totalSize = compressedChunks.reduce(
-      (sum, chunk) => sum + chunk.length,
-      0
-    );
+    const totalSize = compressedChunks.reduce((sum, chunk) => sum + chunk.length, 0);
     const result = new Uint8Array(totalSize);
     let offset = 0;
     for (const chunk of compressedChunks) {
@@ -272,48 +281,8 @@ class ZSTDCompressor {
 
     return {
       compressedData: result,
-      consumed: pos,
+      consumed: pos
     };
-  }
-
-  /**
-   * Flushes any remaining data and ends the compression stream
-   */
-  flush(): Uint8Array {
-    const outBufferPtr = this.zstdModule._malloc(12);
-    this.zstdModule.HEAPU32[outBufferPtr >> 2] = this.outPtr;
-    this.zstdModule.HEAPU32[(outBufferPtr >> 2) + 1] = this.outBufferSize;
-    this.zstdModule.HEAPU32[(outBufferPtr >> 2) + 2] = 0;
-
-    try {
-      const remainingBytes = this.zstdModule._ZSTD_endStream(
-        this.cctx,
-        outBufferPtr
-      );
-      if (this.zstdModule._ZSTD_isError(remainingBytes)) {
-        throw new Error(
-          `Flush failed: ${this.zstdModule.UTF8ToString(
-            this.zstdModule._ZSTD_getErrorName(remainingBytes)
-          )}`
-        );
-      }
-
-      const bytesProduced = this.zstdModule.HEAPU32[(outBufferPtr >> 2) + 2];
-      if (bytesProduced > 0) {
-        const flushData = new Uint8Array(bytesProduced);
-        flushData.set(
-          this.zstdModule.HEAPU8.subarray(
-            this.outPtr,
-            this.outPtr + bytesProduced
-          )
-        );
-        return flushData;
-      }
-
-      return new Uint8Array(0);
-    } finally {
-      this.zstdModule._free(outBufferPtr);
-    }
   }
 
   destroy() {
@@ -501,15 +470,19 @@ async function example() {
     console.log(`Consumed bytes for compression ${i + 1}: ${compressedResult.consumed}`);
 
     if (compressedResult.compressedData.length !== frame.length) {
-      console.log("ERROR Lengths do not match");
+      console.log("*************** ERROR Lengths do not match");
       console.log(`Compressed size ${i + 1}: ${compressedResult.compressedData.length}`);
       console.log(`Original Compressed size ${i + 1}: ${frame.length}`);
       throw new Error("Compression failed: lengths do not match");
     }
 
     if (!compressedResult.compressedData.every((value, index) => value === frame[index])) {
+      console.log("*************** ERROR Data Mismatch");
+      console.log("Data mismatch at index:", compressedResult.compressedData.findIndex((value, index) => value !== frame[index]));
       throw new Error("Compression failed: data mismatch");
     }
+
+    console.log("*************** OK ***************");
   };
 
   const processHexDump = async (hexDump: string[]) => {
